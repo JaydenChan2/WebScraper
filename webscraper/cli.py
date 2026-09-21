@@ -23,16 +23,25 @@ extraction flow already produces by hand.
 "vaccinations" covers two independent datasets (WHO routine-immunization
 coverage, still updating; OWID COVID vaccinations, frozen since 2024-08-14)
 with their own watermarks, since they update on different schedules.
+
+    python -m webscraper.cli impute
+
+Fills gaps in the vaccination CSVs with peer-country values (see
+impute.py / country_classification.py) and writes *_filled.csv siblings,
+leaving the fetched files untouched. Takes no --backfill/--update/--since
+flag -- it's a deterministic post-process over whatever's currently in
+output/, not a network fetch with its own history.
 """
 from __future__ import annotations
 
 import argparse
 from typing import Optional
 
-from . import state_store
+from . import impute, state_store
 from .sources import vaccination, outbreaks, variants
 
-_SOURCES = ("vaccinations", "outbreaks", "variants")
+_FETCH_SOURCES = ("vaccinations", "outbreaks", "variants")
+_ALL_SOURCES = _FETCH_SOURCES + ("impute",)
 
 
 def _resolve_since(dataset_key: str, backfill: bool, since_arg: Optional[str]) -> Optional[str]:
@@ -86,15 +95,22 @@ def _run_variants(backfill: bool, since_arg: Optional[str]) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="MAPS web data scraper")
-    parser.add_argument("source", choices=_SOURCES + ("all",))
-    mode = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument("source", choices=_ALL_SOURCES + ("all",))
+    mode = parser.add_mutually_exclusive_group(required=False)
     mode.add_argument("--backfill", action="store_true", help="pull full history, ignoring saved state")
     mode.add_argument("--update", action="store_true", help="pull only rows newer than the last run")
     mode.add_argument("--since", metavar="YYYY-MM-DD", help="pull only rows on/after this date, ignoring saved state")
     parser.add_argument("--max-pages", type=int, default=50, help="outbreaks only: max API pages to page through (safety cap, not a real limit for a full backfill)")
     args = parser.parse_args(argv)
 
-    sources = _SOURCES if args.source == "all" else (args.source,)
+    if args.source == "impute":
+        impute.run_imputation()
+        return 0
+
+    if not (args.backfill or args.update or args.since):
+        parser.error("one of --backfill, --update, or --since is required for a fetch source")
+
+    sources = _FETCH_SOURCES if args.source == "all" else (args.source,)
 
     for source in sources:
         if source == "vaccinations":

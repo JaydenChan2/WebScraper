@@ -1,5 +1,14 @@
 {
+  "outbreaks": {
+    "last_fetched_date": "2026-09-10"
+  },
+  "vaccinations_owid": {
+    "last_fetched_date": "2024-08-14"
+  },
+  "vaccinations_who": {
+    "last_fetched_date": "2025-12-31"
+  },
   "variants": {
-    "last_fetched_date": "2026-09-20"
+    "last_fetched_date": "2026-08-01"
   }
 }

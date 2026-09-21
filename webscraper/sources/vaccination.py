@@ -19,12 +19,12 @@ Two complementary, independently-verified sources (checked live on 2026-09-20):
 """
 from __future__ import annotations
 
-import csv
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional, Tuple
 from urllib.parse import urlencode
 
 from .. import country_ids
+from ..csv_merge import merge_write
 from ..http import get_json, get_csv_rows
 
 _OUTPUT_DIR = Path(__file__).parent.parent.parent / "output"
@@ -44,12 +44,16 @@ _OWID_VACCINATIONS_URL = (
 OWID_LAST_KNOWN_UPDATE_DATE = "2024-08-14"  # verified 2026-09-20; dataset appears discontinued past this date
 
 
-def fetch_who_immunization_coverage(since_year: Optional[int] = None) -> Path:
+def fetch_who_immunization_coverage(since_year: Optional[int] = None) -> Tuple[Path, Optional[str]]:
     """
     Pull WUENIC routine-immunization coverage for all WHO-registered
-    countries and write a long-format CSV:
+    countries and merge it into a long-format CSV:
         Date,Region,Indicator,Value
     Date is YYYY-12-31 (annual estimate, period-end per PROMPT.md convention).
+
+    Returns (output_path, latest_year_end_date_seen), for use as the next
+    --update watermark (this is an annual series, so "today" would overshoot
+    the next real publication just like the CDC variant series).
     """
     rows_out = []
     for code, indicator_name in _GHO_INDICATORS.items():
@@ -74,20 +78,28 @@ def fetch_who_immunization_coverage(since_year: Optional[int] = None) -> Path:
                 "Value": value,
             })
 
-    rows_out.sort(key=lambda r: (r["Region"], r["Indicator"], r["Date"]))
     out_path = _OUTPUT_DIR / "who_immunization_coverage.csv"
-    _write_csv(out_path, rows_out, ["Date", "Region", "Indicator", "Value"])
-    return out_path
+    latest_date = merge_write(
+        out_path,
+        rows_out,
+        key_fields=["Date", "Region", "Indicator"],
+        leading_fields=["Date", "Region", "Indicator", "Value"],
+    )
+    return out_path, latest_date
 
 
-def fetch_owid_covid_vaccinations(since_date: Optional[str] = None) -> Path:
+def fetch_owid_covid_vaccinations(since_date: Optional[str] = None) -> Tuple[Path, Optional[str]]:
     """
     Pull the (discontinued-since-2024-08-14) OWID COVID-19 vaccinations
-    dataset for historical backfill. Writes one wide CSV:
+    dataset for historical backfill and merge it into one wide CSV:
         Date,Region,total_vaccinations,people_vaccinated,people_fully_vaccinated,total_boosters
     Rows for non-country aggregates (OWID's pseudo ISO codes like
     "OWID_WRL" for continents/income groups) are dropped — Region must be
     a real ISO3 the pipeline can place on the country grid.
+
+    Returns (output_path, latest_date_seen). Since this dataset is frozen at
+    OWID_LAST_KNOWN_UPDATE_DATE, the returned date will never advance past
+    that regardless of when this is run.
     """
     raw_rows = get_csv_rows(_OWID_VACCINATIONS_URL)
     rows_out = []
@@ -107,18 +119,14 @@ def fetch_owid_covid_vaccinations(since_date: Optional[str] = None) -> Path:
             "total_boosters": r.get("total_boosters", ""),
         })
 
-    rows_out.sort(key=lambda r: (r["Region"], r["Date"]))
     out_path = _OUTPUT_DIR / "owid_covid_vaccinations.csv"
-    _write_csv(out_path, rows_out, [
-        "Date", "Region", "total_vaccinations", "people_vaccinated",
-        "people_fully_vaccinated", "total_boosters",
-    ])
-    return out_path
-
-
-def _write_csv(path: Path, rows: List[dict], fieldnames: List[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        w.writerows(rows)
+    latest_date = merge_write(
+        out_path,
+        rows_out,
+        key_fields=["Date", "Region"],
+        leading_fields=[
+            "Date", "Region", "total_vaccinations", "people_vaccinated",
+            "people_fully_vaccinated", "total_boosters",
+        ],
+    )
+    return out_path, latest_date

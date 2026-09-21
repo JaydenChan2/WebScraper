@@ -18,13 +18,13 @@ ambiguity to a human rather than silently resolving it.
 """
 from __future__ import annotations
 
-import csv
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from urllib.parse import urlencode
 
 from .. import country_ids
+from ..csv_merge import merge_write
 from ..http import get_json
 
 _OUTPUT_DIR = Path(__file__).parent.parent.parent / "output"
@@ -41,17 +41,23 @@ def _split_title(title: str) -> tuple[str, Optional[str]]:
     return " - ".join(parts[:-1]).strip(), parts[-1].strip()
 
 
-def fetch_who_outbreak_news(since_date: Optional[str] = None, max_pages: int = 20) -> Path:
+def fetch_who_outbreak_news(since_date: Optional[str] = None, max_pages: int = 20) -> Tuple[Path, Optional[str]]:
     """
     Page through WHO's Disease Outbreak News, newest first, stopping once
     entries are older than `since_date` (ISO date string) or `max_pages` is
-    reached. Writes:
+    reached. Merges results into:
         Date,Disease_raw,Country_raw,Country_ISO3,Title,Url
-    Country_ISO3 is left blank when the free-text country segment can't be
-    confidently resolved — check Flags in the run summary before trusting it.
+    keyed by Url (unique per DON report), so re-running never duplicates an
+    entry. Country_ISO3 is left blank when the free-text country segment
+    can't be confidently resolved — check Flags in the run summary before
+    trusting it.
+
+    Returns (output_path, latest_publication_date_seen), for use as the
+    next --update watermark.
     """
     rows_out: List[dict] = []
     skip = 0
+    exhausted = False
     for _ in range(max_pages):
         query = urlencode({
             "sf_provider": "dynamicProvider372",
@@ -63,6 +69,7 @@ def fetch_who_outbreak_news(since_date: Optional[str] = None, max_pages: int = 2
         data = get_json(f"{_API_BASE}?{query}")
         page = data.get("value", [])
         if not page:
+            exhausted = True
             break
 
         stop = False
@@ -82,18 +89,22 @@ def fetch_who_outbreak_news(since_date: Optional[str] = None, max_pages: int = 2
                 "Url": f"https://www.who.int{item.get('ItemDefaultUrl', '')}",
             })
         if stop:
+            exhausted = True
             break
         skip += _PAGE_SIZE
 
+    if not exhausted:
+        print(
+            f"WARNING: hit max_pages={max_pages} ({max_pages * _PAGE_SIZE} entries) before reaching "
+            f"since_date or the end of the feed — results may be missing older entries. Re-run with "
+            "a higher --max-pages if this is a full backfill."
+        )
+
     out_path = _OUTPUT_DIR / "who_outbreak_news.csv"
-    _write_csv(out_path, rows_out,
-               ["Date", "Disease_raw", "Country_raw", "Country_ISO3", "Title", "Url"])
-    return out_path
-
-
-def _write_csv(path: Path, rows: List[dict], fieldnames: List[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        w.writerows(rows)
+    latest_date = merge_write(
+        out_path,
+        rows_out,
+        key_fields=["Url"],
+        leading_fields=["Date", "Disease_raw", "Country_raw", "Country_ISO3", "Title", "Url"],
+    )
+    return out_path, latest_date
